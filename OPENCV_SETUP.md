@@ -5,7 +5,7 @@
 Your AI Emergency System now includes **continuous OpenCV-based motion detection** that automatically monitors your desktop camera, detects incidents, and triggers the full emergency response pipeline.
 
 ### Architecture Flow
-
+```
 Desktop Camera (27/4 Stream)
     ↓
 OpenCV Motion Detection Service (Python)
@@ -28,6 +28,7 @@ Frontend Dashboard
     ↓ [Live Incident Display]
     ↓ [Captured Frame Images]
     ↓ [Generated Reports
+```
 ## Key Components
 
 ### 1. OpenCV Service (`opencv/camera_service.py`)
@@ -72,43 +73,7 @@ New Functions:
 - `/api/reports/:reportId/frame` endpoint - Serve frame JPEG images
 - Updates `/api/incident` to handle `frame_base64` field
 
-Report Generation:
-Each motion incident generates:
-```json
-{
-  "reportId": "REPORT_1234567890",
-  "timestamp": "2026-04-16T12:34:56.789Z",
-  "incident": {
-    "type": "cctv",
-    "description": "Motion detected at HH:MM:SS - Motion level: 5.2%",
-    "location": "Desktop Camera 0",
-    "severity": "MEDIUM",
-    "mediaSource": "desktop_opencv_camera"
-  },
-  "aiAnalysis": {
-    "classification": "high_risk|not_sure|normal",
-    "alert_message": "AI response message",
-    "reasoning": "Motion detected by OpenCV service"
-  },
-  "resources": {
-    "needed": ["Fire Trucks", "Ambulances", ...],
-    "priority": 1
-  },
-  "alerts": [
-    {
-      "service": "Fire Department",
-      "message": "URGENT: ...",
-      "priority": "CRITICAL"
-    },
-    ...
-  ],
-  "mediaFiles": ["REPORT_1234567890_frame.jpg"]
-}
-```
 
-Report Files Location: `server/reports/`
-- `REPORT_1234567890.json` - Incident report
-- `REPORT_1234567890_frame.jpg` - Captured frame image
 
 ### 3. Simplified Frontend (`client/src/App.jsx`)
 
@@ -214,31 +179,7 @@ docker logs aegis-backend -f
 docker logs aegis-frontend -f
 ```
 
-## 📋 Configuration
 
-### Motion Detection Sensitivity
-
-Edit `opencv/camera_service.py`:
-
-```python
-motion_detector = MotionDetector(
-    threshold=500,        # Min pixel count for motion (increase = less sensitive)
-    blur_kernel=(21, 21)  # Blur size (larger = smoother, more slow motion)
-)
-
-# Also adjust:
-self.motion_sensitivity = 3     # Frames to confirm motion (increase = stricter)
-is_motion = motion_percentage > 2.0  # % of frame considered motion
-min_area = 500  # Min contour area in pixels
-```
-
-### Incident Cooldown
-
-Prevent alert spam by adjusting cooldown (default 2 seconds):
-
-```python
-self.incident_cooldown = 2  # Seconds between incidents
-```
 
 ## 🔧 Troubleshooting
 
@@ -335,13 +276,6 @@ Response:
   }
 }
 ```
-
-### GET /api/reports
-Retrieve last 20 incident reports.
-
-### GET /api/reports/{reportId}/frame
-Retrieve frame image (JPEG).
-
 ## Features to Add Next:
 
 1. Real-time Dashboard
@@ -368,21 +302,8 @@ Retrieve frame image (JPEG).
    - Response time tracking
    - False positive analysis
 
-## ✅ Verification Checklist
-
-- [x] OpenCV service builds and starts
-- [x] Motion detection triggers incidents
-- [x] Backend /api/incident accepts frames
-- [x] Reports directory created with frames and JSON
-- [x] Frontend displays live incidents
-- [x] Frame images display in incident cards
-- [x] Classification colors show correctly
-- [x] Alerts broadcast via Socket.IO
-- [x] Text/Voice/CCTV tabs all functional
-- [x] No syntax errors in any component
-
 ## 🚨 Emergency Response Flow
-
+```
 Motion Detected (OpenCV)
   ↓
 Frame Captured & Encoded
@@ -408,5 +329,5 @@ Frontend Updates Live
 Display Incident Card with Frame
   ↓
 Show Alerts & Resources
-
+```
 Components: OpenCV Service ✓ | Backend ✓ | Frontend ✓ | Reports ✓ | Automation ✓
