@@ -1,0 +1,45 @@
+version: '3.8'
+services:
+  backend:
+    build: ./server
+    container_name: aegis-backend
+    ports:
+      - "5000:5000"
+    env_file: .env
+    restart: on-failure
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:5000/health', res => process.exit(res.statusCode === 200 ? 0 : 1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - aegis-network
+
+  frontend:
+    build: ./client
+    container_name: aegis-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - aegis-network
+
+  opencv:
+    build: ./opencv
+    container_name: aegis-opencv
+    depends_on:
+      backend:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      - BACKEND_URL=http://backend:5000
+    volumes:
+      - /dev/video0:/dev/video0
+    networks:
+      - aegis-network
+
+networks:
+  aegis-network:
+    driver: bridge
