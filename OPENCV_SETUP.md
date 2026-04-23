@@ -1,8 +1,8 @@
-# 🚨 AI Emergency System - OpenCV Integration Guide
+# 🚨 AI Emergency System 
 
-## Overview
+## OpenCV Integration Guide
 
-Your AI Emergency System now includes **continuous OpenCV-based motion detection** that automatically monitors your desktop camera, detects incidents, and triggers the full emergency response pipeline.
+This project uses an OpenCV worker to generate live incident signals for the backend and dashboard.
 
 ### Architecture Flow
 ```
@@ -29,61 +29,20 @@ Frontend Dashboard
     ↓ [Captured Frame Images]
     ↓ [Generated Reports
 ```
-## Key Components
+ 
 
-### 1. OpenCV Service (`opencv/camera_service.py`)
+## What It Does
 
-Purpose: Continuous background motion detection service
+- Connects to the desktop camera
+- Detects motion with background subtraction
+- Estimates optical flow for movement direction
+- Detects faces and crowd density
+- Emits scene objects such as `person`, `vehicle`, `fire`, and `smoke` style detections
+- Sends incidents to `POST /api/incident`
+- Opens a separate webcam preview window so the user can see the live feed while recording or analyzing
 
-Features:
-- Real-time video stream from system camera (device index 0)
-- Background subtraction-based motion detection
-- Automatic motion debouncing (3-frame confirmation)
-- Motion percentage calculation
-- Automatic frame capture on motion detection
-- HTTP POST to backend /api/incident endpoint
-- 2-second cooldown between incidents (prevents spam)
-- Display local window with motion detection visualization
-
-How It Works:
-1. Connects to your desktop camera (`/dev/video0` on Linux, camera index 0)
-2. Initializes MOG2 background subtraction model
-3. For each frame:
-   - Applies background subtraction
-   - Calculates motion percentage
-   - Filters by minimum area (500px²)
-   - Tracks consecutive motion frames
-4. When motion confirmed (3+ consecutive frames):
-   - Encodes frame as JPEG base64
-   - Creates incident payload with motion % metadata
-   - POSTs to `http://backend:5000/api/incident`
-   - Waits 2 seconds before next incident (cooldown)
-
-Motion Detection Triggers:
-- Motion > 2% of frame (configurable via `threshold`)
-- Minimum contour area: 500 pixels² (filters noise)
-- Consecutive confirmation: 3+ frames required
-- Cooldown period: 2 seconds between incidents
-
-### 2. Enhanced Backend (`server/src/index.js`)
-
-New Functions:
-- `saveFrameAndGenerateReport()` - Saves base64 frame to disk, generates JSON report
-- `/api/reports` endpoint - Retrieve last 20 incident reports
-- `/api/reports/:reportId/frame` endpoint - Serve frame JPEG images
-- Updates `/api/incident` to handle `frame_base64` field
-
-
-
-### 3. Simplified Frontend (`client/src/App.jsx`)
-
-CCTV Tab Changes:
-- ✅ Added: Live status indicator ("OpenCV service running")
-- ✅ Added: Auto-refreshing motion events grid
-- ✅ Added: Frame images embedded in incident cards
-- ✅ Added: Links to generate reports
-
-Display Features:
+###  Frontend 
+ Features:
 - Recent motion events in reverse chronological order
 - Classification color-coding:
   - 🟢 Green (normal) - Routine activity
@@ -93,24 +52,7 @@ Display Features:
 - Event timestamps
 - Associated alert counts
 
-### 4. Docker Compose (`docker-compose.yml`)
-
-New OpenCV Service:
-```yaml
-opencv:
-  build: ./opencv
-  container_name: aegis-opencv
-  depends_on:
-    - backend
-  environment:
-    - BACKEND_URL=http://backend:5000
-  volumes:
-    - /dev/video0:/dev/video0  # Mount host camera
-  networks:
-    - aegis-network
-```
-
-Notes:
+###  Docker Compose 
 - Runs independently alongside frontend & backend
 - Auto-connects to backend via Docker network (`http://backend:5000`)
 - Mounts host camera device (`/dev/video0`)
@@ -123,103 +65,6 @@ Notes:
 - Environment variables in `.env` file
 - Camera device properly set up on your system
 
-
-
-## 🔧 Troubleshooting
-
-### OpenCV Service Won't Start
-```bash
-# Check container logs
-docker logs aegis-opencv
-
-# Rebuild service
-docker-compose up --build opencv
-
-# Test camera access
-docker run -it --device /dev/video0 python:3.10 python -c "import cv2; cap = cv2.VideoCapture(0); print('Camera OK' if cap.isOpened() else 'Camera Failed')"
-```
-
-### No Motion Detected
-- Increase motion sensitivity (lower `motion_percentage` threshold)
-- Check camera is not blocked or in darkness
-- Increase blur kernel size: `(25, 25)` instead of `(21, 21)`
-- Reduce min area: `300` instead of `500`
-
-### Backend Not Receiving Incidents
-```bash
-# Test API endpoint
-curl -X POST http://localhost:5000/api/incident \
-  -H "Content-Type: application/json" \
-  -d '{"type":"cctv","description":"Test","location":"Test"}'
-```
-
-### Reports Not Saving
-```bash
-# Check reports directory
-ls -la server/reports/
-
-# Check directory permissions
-chmod 777 server/reports/
-```
-
-### Frame Images Not Displaying
-- Check `/api/reports/{reportId}/frame` endpoint returns JPEG
-- Verify frame files exist: `server/reports/REPORT_*_frame.jpg`
-- Clear browser cache
-
-## 📊 Performance Tuning
-
-### Lower CPU Usage
-- Reduce frame capture rate: Set `cap.set(cv2.CAP_PROP_FPS, 15)` instead of 30
-- Increase blur kernel: `(25, 25)` or `(31, 31)`
-- Increase motion threshold percentage: `> 3.0` instead of `> 2.0`
-
-### Lower Memory Usage
-- Reduce buffer size: Already set to 1 (`CAP_PROP_BUFFERSIZE`)
-- Reduce image resolution: Set smaller width/height in `cap.set()`
-
-### Faster Response Time
-- Decrease motion sensitivity frames: `self.motion_sensitivity = 1`
-- Reduce cooldown: `self.incident_cooldown = 1`
-- Lower blur kernel: `(15, 15)` (more noise but faster)
-
-## 📱 API Reference
-
-### POST /api/incident
-Processes incident and generated alerts.
-
-**Request (from OpenCV):**
-```json
-{
-  "type": "cctv",
-  "mediaType": "video_frame",
-  "mediaSource": "desktop_opencv_camera",
-  "description": "Motion detected at 14:32:15 - Motion level: 5.2%",
-  "location": "Desktop Camera 0",
-  "frame_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
-  "severity": "MEDIUM"
-}
-```
-
-Response:
-```json
-{
-  "incident": {...},
-  "aiResponse": {
-    "classification": "high_risk|not_sure|normal",
-    "alert_message": "...",
-    "resources_needed": ["Fire Trucks", "Ambulances"]
-  },
-  "classification": "high_risk",
-  "priority": 1,
-  "alerts": [...],
-  "report": {
-    "reportId": "REPORT_1234567890",
-    "timestamp": "2026-04-16T...",
-    "mediaFiles": ["REPORT_1234567890_frame.jpg"]
-  }
-}
-```
 
 ## 🚨 Emergency Response Flow
 ```
@@ -249,4 +94,19 @@ Display Incident Card with Frame
   ↓
 Show Alerts & Resources
 ```
-Components: OpenCV Service ✓ | Backend ✓ | Frontend ✓ | Reports ✓ | Automation ✓
+
+
+## Running Locally
+
+```powershell
+cd opencv
+python -B camera_service.py
+```
+
+## Troubleshooting
+
+- If the camera window does not appear, check browser popup permissions for the dashboard
+- If Docker camera passthrough fails on Windows, test without the `opencv` service first
+- If the backend is not receiving incidents, verify the backend is running and `BACKEND_URL` is correct
+- If reports are not showing, check `server/reports/`
+
