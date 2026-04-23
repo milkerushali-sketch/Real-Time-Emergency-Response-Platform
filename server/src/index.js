@@ -4,13 +4,15 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
-const twilio = require('twilio');
 const { analyzeIncident, ALERT_CATEGORIES } = require('./services/aiService');
 const { updateRoadStatus, findSafePath, initializeRoadNetwork } = require('./services/graphService');
+const { buildCoordinates, getAnalyticsSnapshot, getIncidentMap, ingestIncident } = require('./analytics');
+const { sendIntegratedAlerts } = require('./integrations');
+const { transcribeAudioIncident } = require('./services/transcriptionService');
+const { buildDeploymentTracking, buildDashboardSnapshot, buildMapData } = require('./services/dashboardService');
 
 require('dotenv').config();
 
-// Create reports directory if it doesn't exist
 const reportsDir = path.join(__dirname, '../reports');
 if (!fs.existsSync(reportsDir)) {
   fs.mkdirSync(reportsDir, { recursive: true });
@@ -20,105 +22,50 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:3000",
-    methods: ["GET", "POST"]
+    origin: 'http://localhost:3000',
+    methods: ['GET', 'POST']
   }
 });
 
-// Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
 
-// In-memory event store (for demo purposes)
-let eventStore = [];
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
-// Alert messaging system
+const eventStore = [];
+const alertStore = [];
+const deploymentStore = [];
+
 class AlertSystem {
-  static sendAlert(classification, incident, aiResponse) {
-    const alertData = {
-      timestamp: new Date().toISOString(),
-      classification,
-      incident,
-      aiResponse,
-      alertId: `ALERT_${Date.now()}`,
-      status: 'SENT'
-    };
-
-    // Simulate sending alerts to different emergency services
-    const alerts = this.generateServiceAlerts(classification, incident, aiResponse);
-
-    console.log('🚨 ALERT SYSTEM ACTIVATED 🚨');
-    console.log(`Classification: ${classification.toUpperCase()}`);
-    console.log(`Incident: ${incident.description}`);
-    console.log(`Location: ${incident.location}`);
-    console.log(`Detected faces: ${incident.face_count || 0}`);
-    console.log(`Detected emotions: ${incident.face_expressions || 'none'}`);
-    console.log('Alerts sent to:');
-    alerts.forEach(alert => console.log(`  - ${alert.service}: ${alert.message}`));
-
-    if (process.env.TWILIO_SID && process.env.TWILIO_TOKEN && process.env.TWILIO_FROM && process.env.SMS_TO) {
-      const smsText = `Emergency alert: ${incident.description} at ${incident.location}. Classification=${classification.toUpperCase()}.`;
-      this.sendSms(process.env.SMS_TO, smsText);
-    }
-
-    return { alertData, serviceAlerts: alerts };
-  }
-
-  static sendSms(to, message) {
-    try {
-      const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
-      client.messages.create({
-        body: message,
-        from: process.env.TWILIO_FROM,
-        to
-      }).then((msg) => {
-        console.log(`SMS alert sent: ${msg.sid}`);
-      }).catch((smsError) => {
-        console.error('SMS send failed:', smsError.message || smsError);
-      });
-    } catch (error) {
-      console.error('SMS configuration error:', error.message || error);
-    }
-  }
-
   static generateServiceAlerts(classification, incident, aiResponse) {
-    const alerts = [];
+    const alerts = [
+      {
+        service: 'Emergency Dispatch',
+        message: aiResponse.alert_message,
+        priority: this.getPriorityLevel(classification),
+        resources: aiResponse.resources_needed
+      }
+    ];
 
-    // Always alert emergency dispatch
-    alerts.push({
-      service: 'Emergency Dispatch',
-      message: aiResponse.alert_message,
-      priority: this.getPriorityLevel(classification),
-      resources: aiResponse.resources_needed
-    });
-
-    // Additional alerts based on classification
     if (classification === ALERT_CATEGORIES.HIGH_RISK) {
-      if (aiResponse.resources_needed.includes('Fire Trucks')) {
-        alerts.push({
-          service: 'Fire Department',
-          message: `URGENT: ${incident.description} at ${incident.location}. Immediate response required.`,
-          priority: 'CRITICAL'
-        });
-      }
-      if (aiResponse.resources_needed.includes('Ambulances')) {
-        alerts.push({
-          service: 'Medical Services',
-          message: `CRITICAL: Medical emergency at ${incident.location}. ${aiResponse.immediate_actions.join(', ')}`,
-          priority: 'CRITICAL'
-        });
-      }
-      if (aiResponse.resources_needed.includes('Police Units')) {
-        alerts.push({
-          service: 'Police Department',
-          message: `HIGH PRIORITY: Security incident at ${incident.location}. Officer response needed.`,
-          priority: 'HIGH'
-        });
-      }
-    } else if (classification === ALERT_CATEGORIES.UNSURE) {
+      alerts.push({
+        service: 'Fire Department',
+        message: `Urgent deployment for ${incident.location}. Detected risks: ${aiResponse.analysis_summary}`,
+        priority: 'CRITICAL'
+      });
+      alerts.push({
+        service: 'Medical Services',
+        message: `Critical medical standby at ${incident.location}.`,
+        priority: 'CRITICAL'
+      });
+    }
+
+    if (classification === ALERT_CATEGORIES.UNSURE) {
       alerts.push({
         service: 'Emergency Operations Center',
-        message: `REVIEW REQUIRED: Unclear incident at ${incident.location}. Human verification needed.`,
+        message: `Operator review required for ${incident.location}.`,
         priority: 'MEDIUM'
       });
     }
@@ -128,38 +75,44 @@ class AlertSystem {
 
   static getPriorityLevel(classification) {
     switch (classification) {
-      case ALERT_CATEGORIES.HIGH_RISK: return 'CRITICAL';
-      case ALERT_CATEGORIES.UNSURE: return 'MEDIUM';
-      case ALERT_CATEGORIES.NORMAL: return 'LOW';
-      default: return 'MEDIUM';
+      case ALERT_CATEGORIES.HIGH_RISK:
+        return 'CRITICAL';
+      case ALERT_CATEGORIES.UNSURE:
+        return 'MEDIUM';
+      default:
+        return 'LOW';
     }
   }
 }
 
 function buildTextReportFromMedia(incident) {
   if (incident.type === 'voice') {
-    if (incident.transcription) {
-      return incident.transcription;
-    }
-    if (incident.mediaSource) {
-      return `Voice input from ${incident.mediaSource} indicates a potential emergency at ${incident.location || 'the reported location'}.`;
-    }
-    return incident.description || 'Voice input indicates an unspecified emergency requiring rapid review.';
+    return (
+      incident.transcription ||
+      incident.liveTranscript ||
+      incident.description ||
+      `Voice input from ${incident.mediaSource || 'operator microphone'} indicates an emergency near ${
+        incident.location || 'reported location'
+      }.`
+    );
   }
 
   if (incident.type === 'cctv') {
-    if (incident.mediaSource) {
-      const emotionDetails = incident.face_expressions ? ` Emotion signals: ${incident.face_expressions}.` : '';
-      return `Live CCTV feed at ${incident.mediaSource} shows suspicious activity or a possible emergency near ${incident.location || 'the monitored area'}.${emotionDetails}`;
-    }
-    return incident.description || 'Live CCTV footage indicates a potential emergency.';
+    return (
+      incident.description ||
+      `Video feed from ${incident.mediaSource || 'camera'} indicates suspicious activity at ${
+        incident.location || 'monitored area'
+      }.`
+    );
   }
 
   if (incident.type === 'image') {
-    if (incident.mediaSource) {
-      return `Live image snapshot from ${incident.mediaSource} suggests an urgent situation at ${incident.location || 'the monitored area'}.`;
-    }
-    return incident.description || 'Image snapshot suggests a potential emergency.';
+    return (
+      incident.description ||
+      `Image input from ${incident.mediaSource || 'uploaded image'} suggests an incident at ${
+        incident.location || 'monitored area'
+      }.`
+    );
   }
 
   return incident.description || 'Reported emergency requires assessment.';
@@ -169,51 +122,32 @@ function saveFrameAndGenerateReport(incident, aiResponse, decisionResult) {
   try {
     const timestamp = Date.now();
     const reportId = `REPORT_${timestamp}`;
-    
-    // Save frame if provided
     let frameFilename = null;
+
     if (incident.frame_base64) {
       frameFilename = `${reportId}_frame.jpg`;
-      const framePath = path.join(reportsDir, frameFilename);
-      const buffer = Buffer.from(incident.frame_base64, 'base64');
-      fs.writeFileSync(framePath, buffer);
+      fs.writeFileSync(path.join(reportsDir, frameFilename), Buffer.from(incident.frame_base64, 'base64'));
     }
-    
-    // Generate incident report
+
     const report = {
       reportId,
       timestamp: new Date().toISOString(),
-      incident: {
-        type: incident.type,
-        description: incident.description,
-        location: incident.location,
-        severity: incident.severity,
-        mediaSource: incident.mediaSource,
-        face_count: incident.face_count,
-        face_expressions: incident.face_expressions,
-        emotion_level: incident.emotion_level,
-        motion_percentage: incident.motion_percentage
-      },
+      incident: decisionResult.incident,
       aiAnalysis: {
         classification: decisionResult.classification,
-        confidence: aiResponse.confidence || 'N/A',
-        alert_message: aiResponse.alert_message,
-        reasoning: aiResponse.reasoning || 'Motion detected by OpenCV service'
+        confidence: aiResponse.confidence_score,
+        summary: aiResponse.analysis_summary,
+        riskAssessment: aiResponse.risk_assessment
       },
-      resources: {
-        needed: decisionResult.resources,
-        priority: decisionResult.priority
-      },
-      routing: decisionResult.routing,
-      alerts: decisionResult.alerts,
+      map: decisionResult.map,
+      analytics: decisionResult.analytics,
+      resources: decisionResult.resources,
+      deploymentTracking: decisionResult.resourceDeployments,
+      alertDeliveries: decisionResult.integrationDeliveries,
       mediaFiles: frameFilename ? [frameFilename] : []
     };
-    
-    // Save report as JSON
-    const reportPath = path.join(reportsDir, `${reportId}.json`);
-    fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-    
-    console.log(`📋 Report generated: ${reportId}`);
+
+    fs.writeFileSync(path.join(reportsDir, `${reportId}.json`), JSON.stringify(report, null, 2));
     return report;
   } catch (error) {
     console.error('Error generating report:', error);
@@ -221,23 +155,21 @@ function saveFrameAndGenerateReport(incident, aiResponse, decisionResult) {
   }
 }
 
-// Decision Engine Components
 class PriorityEngine {
-  static determinePriority(incident, classification) {
-    // Priority based on AI classification
-    const priorityMap = {
-      [ALERT_CATEGORIES.HIGH_RISK]: 1,
-      [ALERT_CATEGORIES.UNSURE]: 2,
-      [ALERT_CATEGORIES.NORMAL]: 3
-    };
-    return priorityMap[classification] || 2;
+  static determinePriority(classification, incident) {
+    if (classification === ALERT_CATEGORIES.HIGH_RISK || incident.severity === 'CRITICAL') {
+      return 1;
+    }
+    if (classification === ALERT_CATEGORIES.UNSURE) {
+      return 2;
+    }
+    return 3;
   }
 }
 
 class RoutingSystem {
   static async calculateRoute(incident, classification) {
     try {
-      // Block roads only for high-risk incidents
       if (classification === ALERT_CATEGORIES.HIGH_RISK) {
         await updateRoadStatus(incident.location, 'BLOCKED');
       }
@@ -246,14 +178,13 @@ class RoutingSystem {
       return {
         originalRoute: `Central_Hub -> ${incident.location}`,
         alternativeRoute: safePath,
-        estimatedTime: classification === ALERT_CATEGORIES.HIGH_RISK ? 'Emergency routing activated' : '15 minutes',
+        estimatedTime: classification === ALERT_CATEGORIES.HIGH_RISK ? '6 minutes' : '15 minutes',
         roadStatus: classification === ALERT_CATEGORIES.HIGH_RISK ? 'BLOCKED' : 'CLEAR'
       };
     } catch (error) {
-      console.error('Routing error:', error);
       return {
         originalRoute: `Central_Hub -> ${incident.location}`,
-        alternativeRoute: 'Routing system offline - manual coordination required',
+        alternativeRoute: 'Manual routing required',
         estimatedTime: 'Unknown',
         roadStatus: 'UNKNOWN'
       };
@@ -262,75 +193,169 @@ class RoutingSystem {
 }
 
 class ResourceSuggestion {
-  static suggestResources(classification, aiResources) {
-    // Use AI-recommended resources, with fallbacks based on classification
-    if (aiResources && aiResources.length > 0) {
-      return aiResources;
+  static suggestResources(classification, aiResources = [], detections = []) {
+    const inferredResources = [];
+
+    if (detections.some((item) => item.label === 'fire' || item.label === 'smoke')) {
+      inferredResources.push('Fire Trucks', 'Hazmat Team');
+    }
+    if (detections.some((item) => item.label === 'person')) {
+      inferredResources.push('Ambulances', 'Crowd Control Unit');
+    }
+    if (detections.some((item) => item.label === 'vehicle')) {
+      inferredResources.push('Traffic Police', 'Rescue Tow Unit');
     }
 
     const fallbackResources = {
-      [ALERT_CATEGORIES.HIGH_RISK]: ['Fire Trucks', 'Ambulances', 'Police Units', 'Medical Teams', 'Emergency Response Team'],
-      [ALERT_CATEGORIES.UNSURE]: ['Police Units', 'Basic Response Team'],
-      [ALERT_CATEGORIES.NORMAL]: ['Basic Response Team']
+      [ALERT_CATEGORIES.HIGH_RISK]: ['Fire Trucks', 'Ambulances', 'Police Units', 'Medical Teams'],
+      [ALERT_CATEGORIES.UNSURE]: ['Police Units', 'Rapid Assessment Team'],
+      [ALERT_CATEGORIES.NORMAL]: ['Field Monitor']
     };
-    return fallbackResources[classification] || ['Basic Response Team'];
+
+    const merged = [...new Set([...(aiResources || []), ...inferredResources, ...(fallbackResources[classification] || [])])];
+    return merged.filter(Boolean);
   }
 }
 
-// Initialize road network simulation (no database required)
+function summarizeDetections(incident) {
+  const detections = Array.isArray(incident.detections) ? incident.detections : [];
+  const summary = detections.reduce((accumulator, detection) => {
+    accumulator[detection.label] = (accumulator[detection.label] || 0) + 1;
+    return accumulator;
+  }, {});
+
+  return {
+    detections,
+    detectionSummary: summary,
+    opticalFlow: incident.opticalFlow || {
+      averageMotion: incident.motion_percentage || 0,
+      motionDirection: 'steady',
+      motionTracking: 'background-subtraction'
+    }
+  };
+}
+
+async function enrichIncident(incident) {
+  const textReport = buildTextReportFromMedia(incident);
+  const enriched = {
+    ...incident,
+    id: incident.id || `INC_${Date.now()}`,
+    description: textReport,
+    transcribed_report: incident.transcription || textReport,
+    detectedAt: incident.detectedAt || new Date().toISOString(),
+    mapCoordinates: incident.mapCoordinates || buildCoordinates(incident.location)
+  };
+
+  if (incident.type === 'voice' || incident.hasAudio) {
+    const transcription = await transcribeAudioIncident(incident);
+    enriched.transcription = transcription.transcript;
+    enriched.voiceAnalysis = transcription.voiceAnalysis;
+    enriched.transcriptionProvider = transcription.provider;
+    enriched.transcribed_report = transcription.transcript;
+  }
+
+  return {
+    ...enriched,
+    ...summarizeDetections(incident)
+  };
+}
+
+function emitDashboardState() {
+  const analytics = getAnalyticsSnapshot();
+  const snapshot = buildDashboardSnapshot({
+    events: eventStore,
+    analytics,
+    alerts: alertStore,
+    deployments: deploymentStore
+  });
+
+  io.emit('DASHBOARD_SNAPSHOT', snapshot);
+  io.emit('ANALYTICS_UPDATED', analytics);
+  io.emit('INCIDENT_MAP_UPDATED', getIncidentMap());
+  io.emit('RESOURCE_TRACKING_UPDATED', deploymentStore.slice(0, 12));
+}
+
+async function processIncident(incident) {
+  const enrichedIncident = await enrichIncident(incident);
+  const aiResponse = await analyzeIncident(enrichedIncident);
+  const classification = aiResponse.classification;
+  const priority = PriorityEngine.determinePriority(classification, enrichedIncident);
+  const routing = await RoutingSystem.calculateRoute(enrichedIncident, classification);
+  const map = buildMapData(enrichedIncident, classification);
+  const resources = ResourceSuggestion.suggestResources(
+    classification,
+    aiResponse.resources_needed,
+    enrichedIncident.detections
+  );
+  const resourceDeployments = buildDeploymentTracking(resources, enrichedIncident, priority);
+
+  const serviceAlerts = AlertSystem.generateServiceAlerts(classification, enrichedIncident, aiResponse);
+  const integrationResult = await sendIntegratedAlerts(
+    { ...enrichedIncident, id: enrichedIncident.id },
+    { ...aiResponse, classification },
+    serviceAlerts
+  );
+
+  const decisionResult = {
+    id: enrichedIncident.id,
+    incident: enrichedIncident,
+    aiResponse,
+    classification,
+    priority,
+    routing,
+    resources,
+    resourceDeployments,
+    alerts: serviceAlerts,
+    integrationDeliveries: integrationResult.deliveries,
+    map,
+    timestamp: new Date().toISOString(),
+    inputType: enrichedIncident.inputType || enrichedIncident.type,
+    analyticsFlags: {
+      possibleFalsePositive:
+        classification === ALERT_CATEGORIES.NORMAL &&
+        (enrichedIncident.motion_percentage || 0) < 3 &&
+        !enrichedIncident.face_count
+    }
+  };
+
+  decisionResult.analytics = ingestIncident({
+    ...decisionResult,
+    mapCoordinates: map.coordinates,
+    dispatchedAt: new Date().toISOString()
+  });
+
+  eventStore.unshift(decisionResult);
+  eventStore.splice(50);
+
+  deploymentStore.unshift(...resourceDeployments);
+  deploymentStore.splice(12);
+
+  alertStore.unshift(
+    ...serviceAlerts.map((alert) => ({
+      ...alert,
+      incidentId: decisionResult.id,
+      timestamp: decisionResult.timestamp
+    }))
+  );
+  alertStore.splice(20);
+
+  const report = saveFrameAndGenerateReport(enrichedIncident, aiResponse, decisionResult);
+  if (report) {
+    decisionResult.report = report;
+  }
+
+  serviceAlerts.forEach((alert) => io.emit('ALERT_SENT', alert));
+  io.emit('INCIDENT_PROCESSED', decisionResult);
+  emitDashboardState();
+
+  return decisionResult;
+}
+
 initializeRoadNetwork();
 
-// API Routes
 app.post('/api/incident', async (req, res) => {
   try {
-    const incident = req.body;
-    const textReport = buildTextReportFromMedia(incident);
-    const enrichedIncident = {
-      ...incident,
-      description: textReport,
-      transcribed_report: incident.transcription || textReport
-    };
-
-    // Step 1: AI Analysis with classification
-    const aiResponse = await analyzeIncident(enrichedIncident);
-    const classification = aiResponse.classification;
-
-    // Step 2: Decision Engine processes AI response
-    const priority = PriorityEngine.determinePriority(enrichedIncident, classification);
-    const routing = await RoutingSystem.calculateRoute(enrichedIncident, classification);
-    const resources = ResourceSuggestion.suggestResources(classification, aiResponse.resources_needed);
-
-    // Step 3: Send automated alerts
-    const alertResult = AlertSystem.sendAlert(classification, enrichedIncident, aiResponse);
-    alertResult.serviceAlerts.forEach((alert) => io.emit('ALERT_SENT', alert));
-
-    const decisionResult = {
-      incident: enrichedIncident,
-      aiResponse,
-      classification,
-      priority,
-      routing,
-      resources,
-      alerts: alertResult.serviceAlerts,
-      timestamp: new Date().toISOString(),
-      face_count: enrichedIncident.face_count,
-      face_expressions: enrichedIncident.face_expressions,
-      emotion_level: enrichedIncident.emotion_level,
-      motion_percentage: enrichedIncident.motion_percentage
-    };
-
-    // Step 4: Store in Real-Time Event Store
-    eventStore.push(decisionResult);
-
-    // Step 5: Generate and save incident report with frame image
-    const report = saveFrameAndGenerateReport(incident, aiResponse, decisionResult);
-    if (report) {
-      decisionResult.report = report;
-    }
-
-    // Step 6: Emit to Live Dashboard
-    io.emit('INCIDENT_PROCESSED', decisionResult);
-
+    const decisionResult = await processIncident(req.body);
     res.json(decisionResult);
   } catch (error) {
     console.error('Error processing incident:', error);
@@ -339,20 +364,36 @@ app.post('/api/incident', async (req, res) => {
 });
 
 app.get('/api/events', (req, res) => {
-  res.json(eventStore.slice(-10)); // Return last 10 events
+  res.json(eventStore.slice(0, 10));
+});
+
+app.get('/api/analytics', (req, res) => {
+  res.json(getAnalyticsSnapshot());
+});
+
+app.get('/api/map/incidents', (req, res) => {
+  res.json(getIncidentMap());
+});
+
+app.get('/api/dashboard', (req, res) => {
+  res.json(
+    buildDashboardSnapshot({
+      events: eventStore,
+      analytics: getAnalyticsSnapshot(),
+      alerts: alertStore,
+      deployments: deploymentStore
+    })
+  );
 });
 
 app.get('/api/reports', (req, res) => {
   try {
-    const files = fs.readdirSync(reportsDir).filter(f => f.endsWith('.json'));
+    const files = fs.readdirSync(reportsDir).filter((file) => file.endsWith('.json'));
     const reports = files
-      .sort((a, b) => b.localeCompare(a)) // Most recent first
-      .slice(0, 20) // Last 20 reports
-      .map(file => {
-        const filePath = path.join(reportsDir, file);
-        const data = fs.readFileSync(filePath, 'utf8');
-        return JSON.parse(data);
-      });
+      .sort((left, right) => right.localeCompare(left))
+      .slice(0, 20)
+      .map((file) => JSON.parse(fs.readFileSync(path.join(reportsDir, file), 'utf8')));
+
     res.json(reports);
   } catch (error) {
     console.error('Error reading reports:', error);
@@ -362,73 +403,44 @@ app.get('/api/reports', (req, res) => {
 
 app.get('/api/reports/:reportId/frame', (req, res) => {
   try {
-    const { reportId } = req.params;
-    const frameFile = `${reportId}_frame.jpg`;
-    const framePath = path.join(reportsDir, frameFile);
-    
-    if (fs.existsSync(framePath)) {
-      res.setHeader('Content-Type', 'image/jpeg');
-      res.sendFile(framePath);
-    } else {
-      res.status(404).json({ error: 'Frame not found' });
+    const framePath = path.join(reportsDir, `${req.params.reportId}_frame.jpg`);
+    if (!fs.existsSync(framePath)) {
+      return res.status(404).json({ error: 'Frame not found' });
     }
+
+    res.setHeader('Content-Type', 'image/jpeg');
+    return res.sendFile(framePath);
   } catch (error) {
     console.error('Error retrieving frame:', error);
-    res.status(500).json({ error: 'Failed to retrieve frame' });
+    return res.status(500).json({ error: 'Failed to retrieve frame' });
   }
 });
 
-// Socket.IO handling
 io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
+  socket.emit(
+    'DASHBOARD_SNAPSHOT',
+    buildDashboardSnapshot({
+      events: eventStore,
+      analytics: getAnalyticsSnapshot(),
+      alerts: alertStore,
+      deployments: deploymentStore
+    })
+  );
+  socket.emit('INCIDENT_MAP_UPDATED', getIncidentMap());
 
-  // Handle different input sources
   socket.on('REPORT_INCIDENT', async (incident) => {
     try {
-      const textReport = buildTextReportFromMedia(incident);
-      const enrichedIncident = {
-        ...incident,
-        description: textReport,
-        transcribed_report: incident.transcription || textReport
-      };
-
-      // Process through the enhanced pipeline
-      const aiResponse = await analyzeIncident(enrichedIncident);
-      const classification = aiResponse.classification;
-      const priority = PriorityEngine.determinePriority(enrichedIncident, classification);
-      const routing = await RoutingSystem.calculateRoute(enrichedIncident, classification);
-      const resources = ResourceSuggestion.suggestResources(classification, aiResponse.resources_needed);
-
-      const alertResult = AlertSystem.sendAlert(classification, enrichedIncident, aiResponse);
-      alertResult.serviceAlerts.forEach((alert) => io.emit('ALERT_SENT', alert));
-
-      const result = {
-        incident: enrichedIncident,
-        aiResponse,
-        classification,
-        priority,
-        routing,
-        resources,
-        alerts: alertResult.serviceAlerts,
-        timestamp: new Date().toISOString()
-      };
-
-      eventStore.push(result);
-      io.emit('INCIDENT_PROCESSED', result);
+      await processIncident(incident);
     } catch (error) {
       console.error('Incident processing error:', error);
       socket.emit('ERROR', { message: 'Failed to process incident' });
     }
   });
-
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-  });
 });
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚨 AI Emergency Response System running on port ${PORT}`);
-  console.log('📡 Multi-source input analysis enabled');
-  console.log('🚨 Automated alert system active');
+  console.log(`AI Emergency Response System running on port ${PORT}`);
+  console.log('Real-time dashboard feeds enabled');
+  console.log('Connector, analytics, and transcription pipelines active');
 });

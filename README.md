@@ -1,100 +1,162 @@
 # AI Emergency Response System
 
-A real-time AI-powered emergency coordination system that processes incidents through a structured pipeline from user input to resource allocation.
+A real-time emergency coordination platform with a live operations dashboard, AI-assisted incident processing, OpenCV-driven camera analysis, and alert/integration plumbing for dispatch workflows.
+
+## What It Does
+
+- Streams incidents into a real-time React dashboard over Socket.IO
+- Tracks incident locations on a live incident map
+- Shows resource deployment status and ETA tracking
+- Processes camera frames with motion, face, crowd, and object signals
+- Supports transcription and voice-analysis flows
+- Sends alert delivery events for SMS, email, and CAD-style dispatch integrations
+- Aggregates advanced analytics for heatmaps, response times, and false-positive analysis
+- Opens the webcam in a separate preview window while recording or analyzing
 
 ## Architecture
 
-```
-[ Frontend (React Dashboard) ]
-            |
-            |  (user input: text / voice / simulation)
-            v
-[ Backend API (Node.js / Express) ]
-            |
-            |  sends prompt
-            v
-[ AI Layer (Gemini API) ]
-            |
-            |  returns structured JSON
-            v
-[ Decision Engine (Node.js) ]
-   |         |            |
-   |         |            |
-   v         v            v
-Priority   Routing     Resource
-Engine     System      Suggestion
-   |
-   v
-[ Real-Time Event Store ]
-            |
-            v
-[ Live Dashboard Update (React UI) ]
+```text
+[ React Operations Dashboard ]
+        |
+        | Socket.IO / HTTP
+        v
+[ Node.js / Express Backend ]
+        |
+        | incident processing + analytics + connectors
+        v
+[ AI + Decision Layer ]
+        |
+        | routing, priority, resources, alerts
+        v
+[ Dashboard Snapshot Store ]
+        |
+        v
+[ OpenCV Camera Worker ]
 ```
 
 ## Features
 
-- Real-time Incident Processing: Submit emergency reports via text input or simulation
-- AI-Powered Analysis: Google Gemini AI analyzes incidents and provides structured responses
-- Decision Engine: Automatically determines priority levels, routing adjustments, and resource allocation
-- Simplified Routing: Basic routing logic for emergency vehicle coordination
-- Live Dashboard: Real-time updates showing the complete processing pipeline
-- Event Storage: In-memory event store for tracking incident history
+### Real-Time Dashboard
 
-## Quick Start
+- Live Socket.IO listeners for incident updates and alerts
+- Incident map with live marker updates
+- Resource deployment tracking cards
+- Separate webcam preview window for active camera sessions
 
-1. Start the System:
-   ```bash
-   cd ai-emergency-system
-   docker-compose up --build
-   ```
+### Computer Vision Enhancements
 
-2. Access the Dashboard:
-   - Frontend: http://localhost:3000
+- YOLO-style object classification pipeline for `person`, `vehicle`, `fire`, and `smoke` style detections
+- Optical flow motion tracking
+- Crowd and face metadata emission
+- Emotion-level and face-count analysis
 
-3. Test the System:
-   - Use the text input to describe an emergency
-   - Or click "Simulate Critical Emergency" for a demo incident
-   - Watch the real-time processing pipeline in action
+### Integration Connectors
+
+- SMS alert delivery support through Twilio when configured
+- Email alert delivery support through SMTP/Nodemailer when configured
+- CAD-style dispatch connector stub
+- Map integration links for incident location
+
+### Audio Transcription
+
+- Voice incident ingestion
+- Google Cloud Speech-to-Text compatible transcription path
+- Real-time voice analysis and urgency scoring fallback
+
+### Advanced Analytics
+
+- Incident heatmaps
+- Response time tracking
+- False positive analysis
 
 ## API Endpoints
 
-- `POST /api/incident` - Process a new emergency incident
-- `GET /api/events` - Retrieve recent incident history
+- `GET /health` - Backend health check
+- `POST /api/incident` - Process a new incident
+- `GET /api/events` - Recent incident history
+- `GET /api/dashboard` - Current dashboard snapshot
+- `GET /api/analytics` - Analytics snapshot
+- `GET /api/map/incidents` - Live incident map points
+- `GET /api/reports` - Saved incident reports
+- `GET /api/reports/:reportId/frame` - Saved frame image for a report
 
-## Components
+## Docker Desktop Quick Start
 
-### Frontend (React)
-- Real-time dashboard with Socket.IO integration
-- Incident reporting interface
-- Live pipeline visualization
+1. Start the stack:
+   ```powershell
+   cd "d:\New folder\ai-emergency-system"
+   docker compose up --build
+   ```
 
-### Backend (Node.js/Express)
-- RESTful API for incident processing
-- WebSocket support for real-time updates
-- Decision engine with priority, routing, and resource components
+2. Open the dashboard:
+   - Frontend: `http://localhost:3000`
+   - Backend health: `http://localhost:5000/health`
 
-### AI Layer (Google Gemini)
-- Natural language processing of emergency descriptions
-- Structured JSON output for logistics planning
-- Risk assessment and response time estimation
+3. Test it:
+   - Click `Simulate Critical Event`
+   - Send a text report
+   - Start webcam analysis and allow popups so the separate preview window opens
+   - Check the incident map, deployment cards, analytics, and alert panels update in real time
 
-### Routing System
-- Simplified routing logic for emergency coordination
-- Basic path optimization without graph database
-- Emergency protocol activation for critical incidents
+## Notes For Docker
 
-## Example Incident Flow
+- The backend now exposes `/health`, which the compose healthcheck uses.
+- The OpenCV container starts `camera_service.py`.
+- On Windows Docker Desktop, the `/dev/video0` camera mount may not work as-is. If you only want to verify the app UI and backend, you can run the backend and frontend services first.
 
-1. User Input: "Major chemical spill at Industrial Zone"
-2. AI Analysis: Determines rerouting needed, required supplies, target hospital
-3. Decision Engine:
-   - Priority: 1 (Critical)
-   - Routing: Block affected roads, find alternative paths
-   - Resources: Hazmat Team, Fire Trucks, Medical Units
-4. Live Update: Dashboard shows complete processing result
+## Local Development
 
-## Development
+### Backend
 
-The system is containerized with Docker for easy deployment. All components communicate via:
-- HTTP APIs for incident processing
-- WebSockets for real-time updates
+```powershell
+cd server
+npm start
+```
+
+### Frontend
+
+```powershell
+cd client
+npm run dev
+```
+
+### OpenCV Worker
+
+```powershell
+cd opencv
+python -B camera_service.py
+```
+
+## Environment Variables
+
+Common variables used by the backend:
+
+- `GEMINI_API_KEY`
+- `TWILIO_SID`
+- `TWILIO_TOKEN`
+- `TWILIO_FROM`
+- `SMS_TO`
+- `EMAIL_USER`
+- `EMAIL_PASS`
+- `ALERT_EMAIL_TO`
+- `CAD_API_URL`
+- `CAD_API_KEY`
+- `GOOGLE_CLOUD_PROJECT`
+- `GOOGLE_SPEECH_LANGUAGE`
+
+## Verification
+
+- Backend runtime verified through `GET /api/dashboard`
+- OpenCV camera service syntax checked successfully
+- React production build was verified earlier in-session, though a later Windows sandbox rerun hit an `esbuild` spawn permission issue
+
+## Development Flow
+
+The system is designed so incidents can come from:
+
+- Manual text reports
+- Webcam/image capture
+- Voice transcription
+- OpenCV camera worker events
+
+Those events are enriched by the backend, pushed into the event store, and then broadcast to the dashboard in real time.
