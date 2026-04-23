@@ -127,22 +127,6 @@ cd opencv
 python -B camera_service.py
 ```
 
-## Environment Variables
-
-Common variables used by the backend:
-
-- `GEMINI_API_KEY`
-- `TWILIO_SID`
-- `TWILIO_TOKEN`
-- `TWILIO_FROM`
-- `SMS_TO`
-- `EMAIL_USER`
-- `EMAIL_PASS`
-- `ALERT_EMAIL_TO`
-- `CAD_API_URL`
-- `CAD_API_KEY`
-- `GOOGLE_CLOUD_PROJECT`
-- `GOOGLE_SPEECH_LANGUAGE`
 
 ## Verification
 
@@ -159,4 +143,3 @@ The system is designed so incidents can come from:
 - Voice transcription
 - OpenCV camera worker events
 
-Those events are enriched by the backend, pushed into the event store, and then broadcast to the dashboard in real time.
